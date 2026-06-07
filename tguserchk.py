@@ -207,8 +207,8 @@ def check_telegram_username(username):
 def check_fragment_status(username):
     """
     Check username status on Fragment.com.
-    Returns True if NOT on sale / auction / sold (meaning it is free to register),
-    Returns False if it is on auction, for sale, or sold.
+    Returns True if NOT on sale / auction / sold / premium (meaning it is free to register),
+    Returns False if it is listed on Fragment as a collectible.
     """
     url = f"https://fragment.com/username/{username}"
     headers = {
@@ -221,10 +221,9 @@ def check_fragment_status(username):
             
             header_status = soup.find(class_="tm-section-header-status")
             if header_status:
-                status_text = header_status.get_text(strip=True).lower()
-                # If status is Taken, Sold, On auction, or For sale, it is not available for free
-                if status_text in ["taken", "sold", "on auction", "for sale"]:
-                    return False
+                # If any status badge is found, it means it is a premium name / NFT / auction on Fragment.
+                # Therefore, it is NOT available for free standard registration!
+                return False
             
             return True
         else:
@@ -281,16 +280,23 @@ async def claim_username(username):
         
         return True, channel_title
         
-    except telethon.errors.UsernameOccupiedError:
-        return False, "Username is already occupied (someone claimed it first!)"
-    except telethon.errors.UsernameInvalidError:
-        return False, "Username is invalid (e.g. contains illegal characters)"
-    except telethon.errors.ChannelsAdminLocallyError:
-        return False, "Too many public channels on this account (limit is 10!)"
-    except telethon.errors.FloodWaitError as e:
-        return False, f"Telegram rate limit hit (FloodWait: must wait {e.seconds} seconds)"
     except Exception as e:
-        return False, f"Unexpected error during claim: {e}"
+        class_name = e.__class__.__name__
+        if class_name == "UsernameOccupiedError":
+            return False, "Username is already occupied (someone claimed it first!)"
+        elif class_name == "UsernameInvalidError":
+            return False, "Username is invalid (e.g. contains illegal characters)"
+        elif class_name == "UsernamePurchaseAvailableError":
+            return False, "Username is premium and must be purchased on Fragment"
+        elif class_name in ["ChannelsAdminLocatedTooMuchError", "ChannelsAdminLocallyError", "ChannelsTooMuchError"]:
+            return False, "Too many public channels on this account (limit is 10!)"
+        elif class_name == "FloodWaitError":
+            sec = getattr(e, "seconds", 300)
+            return False, f"Telegram rate limit hit (FloodWait: must wait {sec} seconds)"
+        elif isinstance(e, telethon.errors.RPCError):
+            return False, f"Telegram API error: {e.message} ({class_name})"
+        else:
+            return False, f"Unexpected error during claim: {e}"
 
 async def main():
     global userbot_client
