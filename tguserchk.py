@@ -2,6 +2,7 @@ import os
 import sys
 import time
 import requests
+import asyncio
 from bs4 import BeautifulSoup
 from groq import Groq
 
@@ -249,7 +250,7 @@ def send_telegram_alert(chat_id, text):
     except Exception as e:
         print(f"❌ Alert exception: {e}")
 
-def claim_username(username):
+async def claim_username(username):
     """
     Creates a channel and claims the username.
     Returns (True, channel_title) if claimed successfully,
@@ -263,7 +264,7 @@ def claim_username(username):
         print(f"🔨 Creating new channel '{channel_title}'...")
         
         # Create channel
-        created_chat = userbot_client(CreateChannelRequest(
+        created_chat = await userbot_client(CreateChannelRequest(
             title=channel_title,
             about="This username was automatically claimed by tguserchk.",
             megagroup=False
@@ -273,7 +274,7 @@ def claim_username(username):
         print(f"🔗 Assigning username @{username} to the channel...")
         
         # Assign username
-        userbot_client(UpdateUsernameRequest(
+        await userbot_client(UpdateUsernameRequest(
             channel=target_channel,
             username=username
         ))
@@ -291,7 +292,7 @@ def claim_username(username):
     except Exception as e:
         return False, f"Unexpected error during claim: {e}"
 
-def main():
+async def main():
     global userbot_client
     print("🚀 Telegram & Fragment.com Username Evaluator Initialized.")
     
@@ -303,7 +304,7 @@ def main():
     if userbot_client:
         print("🔗 Connecting Userbot client to Telegram...")
         try:
-            userbot_client.start()
+            await userbot_client.start()
             print("✅ Userbot client connected successfully!")
         except Exception as e:
             print(f"❌ Failed to start Userbot client: {e}")
@@ -359,7 +360,7 @@ def main():
                 # Try to claim
                 if userbot_client:
                     send_telegram_alert(TELEGRAM_CHAT_ID_LOGS, f"⚡ Userbot: Attempting to claim @{current_name}...")
-                    success, detail = claim_username(current_name)
+                    success, detail = await claim_username(current_name)
                     if success:
                         success_msg = f"🎉 CLAIM SUCCESS: Username @{current_name} has been successfully claimed and assigned to channel '{detail}'!"
                         print(success_msg)
@@ -384,4 +385,4 @@ def main():
         time.sleep(CHECK_DELAY)
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
