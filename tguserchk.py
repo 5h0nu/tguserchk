@@ -5,6 +5,15 @@ import requests
 from bs4 import BeautifulSoup
 from groq import Groq
 
+# Import Telethon elements for Userbot/Auto-claiming
+try:
+    from telethon import TelegramClient
+    from telethon.sessions import StringSession
+    from telethon.tl.functions.channels import CreateChannelRequest, UpdateUsernameRequest
+    import telethon.errors
+except ImportError:
+    print("ℹ️ Telethon not installed. Telethon is required for auto-claiming.")
+
 # Reconfigure stdout/stderr to support Unicode characters in Windows terminal
 if hasattr(sys.stdout, "reconfigure"):
     sys.stdout.reconfigure(encoding="utf-8")
@@ -26,7 +35,21 @@ if os.path.exists(".env"):
 # --- CONFIGURATION (Reads from Environment) ---
 GROQ_API_KEY = os.environ.get("GROQ_API_KEY", "")
 TELEGRAM_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "")
+
+# Two separate IDs for alerts
+TELEGRAM_CHAT_ID_LOGS = os.environ.get("TELEGRAM_CHAT_ID_LOGS", "")
+if not TELEGRAM_CHAT_ID_LOGS:
+    # Fallback to older TELEGRAM_CHAT_ID variable
+    TELEGRAM_CHAT_ID_LOGS = os.environ.get("TELEGRAM_CHAT_ID", "")
+
+TELEGRAM_CHAT_ID_SUCCESS = os.environ.get("TELEGRAM_CHAT_ID_SUCCESS", "")
+if not TELEGRAM_CHAT_ID_SUCCESS:
+    TELEGRAM_CHAT_ID_SUCCESS = TELEGRAM_CHAT_ID_LOGS
+
+# Userbot parameters for Auto-Claiming
+TELEGRAM_API_ID = os.environ.get("TELEGRAM_API_ID", "")
+TELEGRAM_API_HASH = os.environ.get("TELEGRAM_API_HASH", "")
+TELEGRAM_STRING_SESSION = os.environ.get("TELEGRAM_STRING_SESSION", "")
 
 CHECK_DELAY = int(os.environ.get("CHECK_DELAY", "4"))
 LLM_REFILL_THRESHOLD = 5
@@ -43,6 +66,18 @@ if GROQ_API_KEY:
         client = Groq(api_key=GROQ_API_KEY)
     except Exception as e:
         print(f"⚠️ Failed to initialize Groq client: {e}")
+
+# Initialize Userbot client if credentials are provided
+userbot_client = None
+if TELEGRAM_STRING_SESSION and TELEGRAM_API_ID and TELEGRAM_API_HASH:
+    try:
+        api_id_int = int(TELEGRAM_API_ID)
+        userbot_client = TelegramClient(StringSession(TELEGRAM_STRING_SESSION), api_id_int, TELEGRAM_API_HASH)
+        print("⚡ Userbot Client configured successfully.")
+    except Exception as e:
+        print(f"⚠️ Failed to parse userbot credentials: {e}")
+else:
+    print("ℹ️ Userbot credentials (API ID, API Hash, or String Session) not set. Running in DRY-RUN / READ-ONLY mode.")
 
 def load_checked_usernames():
     """Loads previously checked usernames from a local file to prevent duplicates."""
@@ -74,7 +109,6 @@ def download_dictionary_if_needed():
         try:
             response = requests.get(WORDLIST_URL, timeout=15)
             if response.status_code == 200:
-                # Filter words (length 5 to 8, only alphanumeric)
                 words = []
                 for line in response.text.splitlines():
                     w = line.strip().lower()
@@ -198,47 +232,92 @@ def check_fragment_status(username):
         print(f"⚠️ Fragment check failed for @{username}: {e}")
         return True
 
-def send_telegram_alert(username):
-    """Sends a notification to Telegram bot channel when a free/available name is found."""
+def send_telegram_alert(chat_id, text):
+    """Sends a notification to Telegram bot channel."""
+    if not TELEGRAM_BOT_TOKEN or not chat_id:
+        return
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-    text = (
-        f"✨ AVAILABLE USERNAME FOUND!\n"
-        f"👉 @{username}\n\n"
-        f"🔗 Telegram: https://t.me/{username}\n"
-        f"🔗 Fragment: https://fragment.com/username/{username}"
-    )
     payload = {
-        "chat_id": TELEGRAM_CHAT_ID,
+        "chat_id": chat_id,
         "text": text,
         "disable_web_page_preview": True
     }
     try:
         res = requests.post(url, json=payload)
-        if res.status_code == 200:
-            print(f"📡 Bot alert pushed to Telegram for @{username}!")
-        else:
+        if res.status_code != 200:
             print(f"❌ Failed to push bot alert: {res.text}")
     except Exception as e:
         print(f"❌ Alert exception: {e}")
 
+def claim_username(username):
+    """
+    Creates a channel and claims the username.
+    Returns (True, channel_title) if claimed successfully,
+    Returns (False, error_reason) otherwise.
+    """
+    if not userbot_client:
+        return False, "Userbot client not initialized."
+        
+    try:
+        channel_title = f"Claimed {username}"
+        print(f"🔨 Creating new channel '{channel_title}'...")
+        
+        # Create channel
+        created_chat = userbot_client(CreateChannelRequest(
+            title=channel_title,
+            about="This username was automatically claimed by tguserchk.",
+            megagroup=False
+        ))
+        
+        target_channel = created_chat.chats[0]
+        print(f"🔗 Assigning username @{username} to the channel...")
+        
+        # Assign username
+        userbot_client(UpdateUsernameRequest(
+            channel=target_channel,
+            username=username
+        ))
+        
+        return True, channel_title
+        
+    except telethon.errors.UsernameOccupiedError:
+        return False, "Username is already occupied (someone claimed it first!)"
+    except telethon.errors.UsernameInvalidError:
+        return False, "Username is invalid (e.g. contains illegal characters)"
+    except telethon.errors.ChannelsAdminLocallyError:
+        return False, "Too many public channels on this account (limit is 10!)"
+    except telethon.errors.FloodWaitError as e:
+        return False, f"Telegram rate limit hit (FloodWait: must wait {e.seconds} seconds)"
+    except Exception as e:
+        return False, f"Unexpected error during claim: {e}"
+
 def main():
+    global userbot_client
     print("🚀 Telegram & Fragment.com Username Evaluator Initialized.")
     
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("❌ ERROR: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID must be set in .env file or environment variables!")
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID_LOGS:
+        print("❌ ERROR: TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID_LOGS must be set in .env file or environment variables!")
         sys.exit(1)
+        
+    # Start userbot connection if configured
+    if userbot_client:
+        print("🔗 Connecting Userbot client to Telegram...")
+        try:
+            userbot_client.start()
+            print("✅ Userbot client connected successfully!")
+        except Exception as e:
+            print(f"❌ Failed to start Userbot client: {e}")
+            userbot_client = None
     
     checked_usernames = load_checked_usernames()
     dict_words = load_dictionary_words()
     
-    # We will pick words from our dictionary file that haven't been checked yet
     dict_index = 0
     username_pool = []
     
     while True:
         # Refill username pool if it drops below threshold
         if len(username_pool) < LLM_REFILL_THRESHOLD:
-            # First, try refilling from dictionary words
             refilled_count = 0
             while dict_index < len(dict_words) and refilled_count < 10:
                 word = dict_words[dict_index]
@@ -247,14 +326,12 @@ def main():
                     username_pool.append(word)
                     refilled_count += 1
             
-            # Second, augment with Groq if available
             if client and refilled_count < 5:
                 new_batch = fetch_rare_usernames_from_groq()
                 for name in new_batch:
                     if name not in checked_usernames and name not in username_pool:
                         username_pool.append(name)
             
-            # If still empty, wait and loop
             if not username_pool:
                 print("💤 Dictionary fully processed and no new words from Groq. Sleeping 60s...")
                 time.sleep(60)
@@ -262,7 +339,6 @@ def main():
         
         current_name = username_pool.pop(0)
         
-        # Double check to prevent duplicates in the current run
         if current_name in checked_usernames:
             continue
             
@@ -272,8 +348,30 @@ def main():
         if check_telegram_username(current_name):
             # 2. Check Fragment.com
             if check_fragment_status(current_name):
-                print(f"✨ MATCH: @{current_name} is AVAILABLE on Telegram & Fragment! Sending alert...")
-                send_telegram_alert(current_name)
+                # Available!
+                log_text = f"✨ Available Username Found:\n👉 @{current_name}\n\n" \
+                           f"🔗 Telegram: https://t.me/{current_name}\n" \
+                           f"🔗 Fragment: https://fragment.com/username/{current_name}"
+                
+                # Send to log ID
+                send_telegram_alert(TELEGRAM_CHAT_ID_LOGS, log_text)
+                
+                # Try to claim
+                if userbot_client:
+                    send_telegram_alert(TELEGRAM_CHAT_ID_LOGS, f"⚡ Userbot: Attempting to claim @{current_name}...")
+                    success, detail = claim_username(current_name)
+                    if success:
+                        success_msg = f"🎉 CLAIM SUCCESS: Username @{current_name} has been successfully claimed and assigned to channel '{detail}'!"
+                        print(success_msg)
+                        # Notify log ID and success ID
+                        send_telegram_alert(TELEGRAM_CHAT_ID_LOGS, success_msg)
+                        send_telegram_alert(TELEGRAM_CHAT_ID_SUCCESS, success_msg)
+                    else:
+                        fail_msg = f"⚠️ CLAIM FAILED: Failed to claim @{current_name} (Reason: {detail})"
+                        print(fail_msg)
+                        send_telegram_alert(TELEGRAM_CHAT_ID_LOGS, fail_msg)
+                else:
+                    print(f"ℹ️ Dry-run mode: Skipping auto-claim for @{current_name}")
             else:
                 print(f"❌ @{current_name} is not taken on Telegram but is SOLD/ON-SALE on Fragment.")
         else:
