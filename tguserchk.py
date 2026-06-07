@@ -57,8 +57,8 @@ LLM_REFILL_THRESHOLD = 5
 
 # Files for persistence
 CHECKED_FILE = "checked_usernames.txt"
-WORDS_FILE = "words.txt"
-WORDLIST_URL = "https://raw.githubusercontent.com/first20hours/google-10000-english/master/google-10000-english-usa-no-swears-medium.txt"
+WORDS_FILE = "words_alpha.txt"
+WORDLIST_URL = "https://raw.githubusercontent.com/dwyl/english-words/master/words_alpha.txt"
 
 # Initialize Groq client if key is available
 client = None
